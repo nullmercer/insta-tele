@@ -1,10 +1,11 @@
 # Instagram Archive Bot
 
-A production-grade Telegram bot that archives Instagram posts from public accounts directly into Telegram cloud storage with persistent state management and automated synchronization.
+A production-grade Telegram bot that archives Instagram posts from public accounts into Telegram forum groups, creating a forum-like experience where each tracked user's posts are organized in dedicated forum topics.
 
 ## Features
 
 - **Full Automation**: Handles initial historical archive sync and continuous new-post tracking
+- **Forum-Based Organization**: Archives posts into dedicated forum topics (one per tracked account) for intuitive browsing and discussion
 - **Cloud Storage**: Utilizes Telegram as the sole permanent storage backend, eliminating the need for local media persistence
 - **Duplicate Prevention**: Skips already archived posts to prevent redundant uploads
 - **Zero Local Storage**: Streams media directly through memory (BytesIO) without saving files to disk
@@ -13,6 +14,7 @@ A production-grade Telegram bot that archives Instagram posts from public accoun
 - **Asynchronous Operations**: Built with async/await architecture for non-blocking operations and scalability
 - **Error Handling**: Includes retry logic, timeout handling, rate-limit management, and graceful failure recovery
 - **Session Management**: Supports Instagram session authentication using instagrapi for improved reliability
+- **Per-User Topics**: Each tracked Instagram account gets its own forum topic for organized archiving
 
 ## Architecture Overview
 
@@ -27,7 +29,7 @@ requests.get() (Media Download)
     ↓
 BytesIO Memory Stream
     ↓
-Telegram Upload
+Telegram Upload (to Forum Topic)
     ↓
 Telegram Cloud Storage
     ↓
@@ -36,8 +38,9 @@ SQLite Persistence
 
 **Key Architectural Principles:**
 - **No Permanent Local Media Files**: Media is downloaded directly into memory and streamed to Telegram
-- **Telegram as Storage Backend**: All archived media resides in a private Telegram channel
+- **Telegram as Storage Backend**: All archived media resides in forum topics within a Telegram supergroup
 - **In-Memory Processing**: Media exists only temporarily in RAM during transfer
+- **Forum-Based Organization**: Posts are organized by Instagram account in separate forum topics for better user experience
 
 ## Setup Instructions
 
@@ -57,19 +60,26 @@ SQLite Persistence
 3. Follow instructions to choose a bot name and username (username must end with `bot`)
 4. Save the API token provided
 
-#### Create a Private Telegram Channel
+#### Create a Forum-Enabled Telegram Group
 
-1. Create a new private channel in Telegram
+1. Create a new private supergroup in Telegram
 2. Name it appropriately (e.g., "Instagram Archive")
-3. Open channel info → Administrators → Add Admin
-4. Search for your bot's username and add it
-5. Ensure it has `Post Messages` and `Send Media` permissions
+3. Open group info → Manage group
+4. Enable **Topics** (Forums) feature:
+   - Tap "Topics" or "Edit Group"
+   - Toggle on "Topics" if available
+5. Add your bot as an administrator:
+   - Group info → Administrators → Add Admin
+   - Search for your bot's username
+   - Grant permissions: `Post Messages`, `Send Media`, `Manage Topics`, and `Pin Messages`
 
-#### Get Your Telegram Channel ID
+#### Get Your Telegram Group ID
 
-1. Forward any message from your private channel to `@RawDataBot`
+1. Forward any message from your forum group to `@RawDataBot`
 2. Look for the `chat` object's `id` field in the response
-3. This negative number is your `TELEGRAM_CHANNEL_ID`
+3. This negative number is your `TELEGRAM_GROUP_ID`
+
+**Note**: The bot will automatically create forum topics for each tracked Instagram account. You don't need to create topics manually.
 
 ### 2. Instagram Session Setup
 
@@ -95,7 +105,7 @@ Create a `.env` file in the root directory:
 
 ```ini
 BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
-TELEGRAM_CHANNEL_ID=YOUR_TELEGRAM_CHANNEL_ID
+TELEGRAM_GROUP_ID=YOUR_TELEGRAM_GROUP_ID
 INSTAGRAM_USERNAME=YOUR_INSTAGRAM_USERNAME
 INSTAGRAM_SESSION_ID=YOUR_SESSION_ID
 CHECK_INTERVAL_MINUTES=10
@@ -104,7 +114,7 @@ LOG_LEVEL=INFO
 
 **Environment Variables:**
 - `BOT_TOKEN`: API token from BotFather
-- `TELEGRAM_CHANNEL_ID`: Your private channel ID
+- `TELEGRAM_GROUP_ID`: Your forum-enabled supergroup ID
 - `INSTAGRAM_USERNAME`: Your Instagram username
 - `INSTAGRAM_SESSION_ID`: Session ID for authentication (optional)
 - `CHECK_INTERVAL_MINUTES`: Interval between sync checks (default: 10)
@@ -148,30 +158,39 @@ docker-compose down
 
 - `/start` - Initialize the bot
 - `/help` - Show available commands
-- `/track <username>` - Add Instagram account to tracking
-- `/untrack <username>` - Stop tracking an account
+- `/track <username>` - Add Instagram account to tracking (creates a forum topic for this account)
+- `/untrack <username>` - Stop tracking an account and close its forum topic
 - `/list` - Show all tracked accounts
 - `/status` - Check bot and sync status
 
 ## Database Schema
 
-The bot uses SQLite (`data/archive.db`) with three main tables:
+The bot uses SQLite (`data/archive.db`) with four main tables:
 
 ```sql
 CREATE TABLE tracked_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
-    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    topic_id INTEGER
 );
 
 CREATE TABLE archived_posts (
     shortcode TEXT PRIMARY KEY,
     username TEXT NOT NULL,
     telegram_file_id TEXT,
+    message_id INTEGER,
     media_type TEXT,
     caption TEXT,
     timestamp TIMESTAMP,
     archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (username) REFERENCES tracked_accounts (username)
+);
+
+CREATE TABLE forum_topics (
+    topic_id INTEGER PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (username) REFERENCES tracked_accounts (username)
 );
 
@@ -188,31 +207,46 @@ The bot uses an efficient incremental sync process:
 1. **Check Tracked Accounts**: Iterates through all tracked accounts in the database
 2. **Fetch Latest Posts**: Retrieves recent posts using instagrapi
 3. **Compare Shortcodes**: Checks against the `archived_posts` table
-4. **Archive New Posts**: Only processes posts with unseen shortcodes
-5. **Save Metadata**: Stores post metadata and Telegram file ID
+4. **Archive New Posts**: Posts to the corresponding forum topic for that account
+5. **Save Metadata**: Stores post metadata, Telegram file ID, and message ID
 6. **Efficient Skipping**: Stops processing when encountering already-archived posts
+
+## Forum Topic Organization
+
+Each tracked Instagram account automatically gets a dedicated forum topic within your group:
+- **Topic Name**: Instagram username
+- **Topic Description**: Link to the Instagram profile
+- **Organization**: All posts for a specific account are grouped together in one topic
+- **Discussion**: Users can comment and discuss posts within each topic
+- **Pinned**: Important/recent posts can be pinned within the topic
 
 ## Security Best Practices
 
 - **Protect Your Bot Token**: Never commit `.env` to version control or share publicly
 - **Session Files**: Treat session files with the same security as passwords
-- **Private Channel**: Always use a private Telegram channel for archiving
+- **Private Group**: Always use a private group for archiving; never make it public
 - **Least Privilege**: Grant only necessary permissions to your bot
 - **Keep Dependencies Updated**: Regularly update Python packages for security patches
+- **Topic Visibility**: All members of the group can see all topics; use a closed group if you need more privacy
 
 ## Troubleshooting
 
 ### Bot Not Responding
 - Verify `BOT_TOKEN` is correct in `.env`
 - Ensure the bot process is running
-- Check that the bot is added to your channel/group
+- Check that the bot is added to your group as an administrator
 
 ### Posts Not Archiving
 - Review bot logs for errors: `docker-compose logs -f`
-- Verify `TELEGRAM_CHANNEL_ID` is correct
-- Confirm bot has admin permissions in the channel
+- Verify `TELEGRAM_GROUP_ID` is correct
+- Confirm bot has admin permissions, including `Manage Topics`
 - Check that Instagram authentication is working
 - Instagram may be rate-limiting; try again after some time
+
+### Forum Topics Not Creating
+- Ensure your group has Topics (Forums) enabled
+- Verify bot has the `Manage Topics` permission
+- Check bot logs for topic creation errors
 
 ### Instagram Authentication Issues
 - Ensure `INSTAGRAM_USERNAME` and `INSTAGRAM_SESSION_ID` are set
